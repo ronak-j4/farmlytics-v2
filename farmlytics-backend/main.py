@@ -10,6 +10,9 @@ import os
 import requests
 from dotenv import load_dotenv
 
+# Import irrigation prediction logic
+from irrigation_lstm_backend.predict_lstm import predict_irrigation
+
 load_dotenv()
 
 app = FastAPI(title="Farmlytics Crop Recommendation API")
@@ -54,6 +57,17 @@ class WeatherCropInput(BaseModel):
     humidity: Optional[float] = None
     ph: float
     rainfall: Optional[float] = None
+
+class IrrigationInput(BaseModel):
+    location: str
+    cropType: Optional[str] = None
+    soilType: Optional[str] = None
+    nitrogen: Optional[float] = None
+    phosphorus: Optional[float] = None
+    potassium: Optional[float] = None
+    soilPH: Optional[float] = None
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
 
 @app.post("/predict")
 def predict_crop(data: CropInput):
@@ -333,6 +347,36 @@ def predict_with_weather(data: WeatherCropInput):
             },
             "weather_source": weather_source
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/predict-irrigation")
+def predict_irrigation_endpoint(data: IrrigationInput):
+    """
+    Predict irrigation requirement for next 5 days using LSTM model.
+    """
+    try:
+        # Geocoding to get latitude and longitude from location string
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={data.location}&count=1"
+        geo_response = requests.get(geo_url)
+        if geo_response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch location coordinates.")
+            
+        geo_data = geo_response.json()
+        if not geo_data.get("results"):
+            raise HTTPException(status_code=400, detail=f"Location '{data.location}' not found.")
+            
+        latitude = geo_data["results"][0]["latitude"]
+        longitude = geo_data["results"][0]["longitude"]
+        
+        # Call the internal function for LSTM prediction
+        irrigation_plan = predict_irrigation(latitude, longitude)
+        
+        # Return the exact JSON structure requested
+        return irrigation_plan
+        
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

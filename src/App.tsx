@@ -1,16 +1,14 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import Markdown from 'react-markdown';
+import { GoogleGenAI, Type } from "@google/genai";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell
 } from 'recharts';
 import {
   Sprout, Droplets, Thermometer, CloudRain, AlertTriangle, CheckCircle2,
   History, PlusCircle, LayoutDashboard, LineChart as ChartIcon, Bell,
-  Menu, X, Leaf, Activity, Beaker, Wind, BrainCircuit, MapPin, ChevronDown, ChevronUp
+  Menu, X, Leaf, Activity, Beaker, Wind, BrainCircuit
 } from 'lucide-react';
-import { GoogleGenAI, Type } from '@google/genai';
-
-import { CropRecommendationView } from './components/CropRecommendationView';
 
 type CropType = string;
 
@@ -136,6 +134,14 @@ function useAgricultureSystem() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
   const addRecord = (data: Omit<FarmData, 'id' | 'timestamp' | 'decisions'>) => {
+    const generateId = () => {
+      try {
+        return crypto.randomUUID();
+      } catch (e) {
+        return Math.random().toString(36).substring(2) + Date.now().toString(36);
+      }
+    };
+
     const cropConfig = CROP_DATA[data.cropType] || CROP_DATA['Wheat'];
     const threshold = { moisture: cropConfig.criticalMoisture, temperature: cropConfig.tempMax };
     const decisions: string[] = [];
@@ -149,7 +155,7 @@ function useAgricultureSystem() {
       decisions.push(...data.realtimeIrrigation.decision_trace);
       if (data.realtimeIrrigation.irrigate) {
         currentWaterUsed += data.realtimeIrrigation.recommended_water_liters;
-        newActions.push({ id: crypto.randomUUID(), priority: 5, action: `Start ${data.realtimeIrrigation.recommended_irrigation_method} Irrigation` });
+        newActions.push({ id: generateId(), priority: 5, action: `Start ${data.realtimeIrrigation.recommended_irrigation_method} Irrigation` });
       } else {
         currentWaterSaved += 50;
       }
@@ -160,38 +166,38 @@ function useAgricultureSystem() {
     // Irrigation (Future Predictor)
     if (data.irrigationResult) {
       if (data.irrigationResult.immediate_irrigation) {
-        newActions.push({ id: crypto.randomUUID(), priority: 4, action: "Review 5-Day Irrigation Plan" });
+        newActions.push({ id: generateId(), priority: 4, action: "Review 5-Day Irrigation Plan" });
       }
     }
 
     // Disease
     if (data.humidity > 80) {
       const msg = `ALERT: High Fungal Risk for ${data.cropType} Field ${data.fieldNumber}`;
-      newNotifications.push({ id: crypto.randomUUID(), message: msg, type: 'sms', timestamp: Date.now() });
-      newNotifications.push({ id: crypto.randomUUID(), message: msg, type: 'email', timestamp: Date.now() });
-      newNotifications.push({ id: crypto.randomUUID(), message: msg, type: 'app', timestamp: Date.now() });
+      newNotifications.push({ id: generateId(), message: msg, type: 'sms', timestamp: Date.now() });
+      newNotifications.push({ id: generateId(), message: msg, type: 'email', timestamp: Date.now() });
+      newNotifications.push({ id: generateId(), message: msg, type: 'app', timestamp: Date.now() });
       decisions.push("High fungal risk detected");
-      newActions.push({ id: crypto.randomUUID(), priority: 5, action: "Disease Alert" });
+      newActions.push({ id: generateId(), priority: 5, action: "Disease Alert" });
     }
 
     // Rainfall
     if (data.rainfall > 50) {
       decisions.push("Heavy rainfall detected");
-      newActions.push({ id: crypto.randomUUID(), priority: 4, action: "Check Drainage System" });
+      newActions.push({ id: generateId(), priority: 4, action: "Check Drainage System" });
     }
 
     // Fertilizer
     if (data.nitrogen < 40) {
       decisions.push("Low Nitrogen → Recommend Urea");
-      newActions.push({ id: crypto.randomUUID(), priority: 4, action: "Apply Urea" });
+      newActions.push({ id: generateId(), priority: 4, action: "Apply Urea" });
     }
     if (data.phosphorus < 30) {
       decisions.push("Low Phosphorus → Recommend DAP");
-      newActions.push({ id: crypto.randomUUID(), priority: 4, action: "Apply DAP" });
+      newActions.push({ id: generateId(), priority: 4, action: "Apply DAP" });
     }
     if (data.potassium < 30) {
       decisions.push("Low Potassium → Recommend MOP");
-      newActions.push({ id: crypto.randomUUID(), priority: 3, action: "Apply MOP" });
+      newActions.push({ id: generateId(), priority: 3, action: "Apply MOP" });
     }
     if (data.soilPH < 6) {
       decisions.push("Soil Acidic → Apply Lime");
@@ -201,7 +207,7 @@ function useAgricultureSystem() {
 
     const newRecord: FarmData = {
       ...data,
-      id: crypto.randomUUID(),
+      id: generateId(),
       timestamp: Date.now(),
       decisions
     };
@@ -370,28 +376,45 @@ function calculateRealtimeIrrigation(data: any): RealtimeIrrigationResult {
 }
 
 async function generateIrrigationPlan(data: any): Promise<IrrigationPlanResult> {
-  const apiKey = import.meta.env.VITE_WEATHER_API_KEY || 'dummy_key';
+  const fetchWithTimeout = async (url: string, options: any = {}, timeout = 8000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(id);
+      return response;
+    } catch (e) {
+      clearTimeout(id);
+      throw e;
+    }
+  };
+
+  // 1. Fetch Weather Forecast (using Open-Meteo as fallback or primary)
   let weatherForecast: any[] = [];
-  
   try {
-    if (apiKey !== 'dummy_key') {
-      const res = await fetch(`https://api.weatherapi.com/v1/forecast.json?key=${apiKey}&q=${data.location}&days=5&aqi=no&alerts=no`);
-      if (res.ok) {
-        const weatherData = await res.json();
-        weatherForecast = weatherData.forecast.forecastday.map((day: any) => ({
-          date: day.date.split('-').reverse().join('/'),
-          chance_of_rain: day.day.daily_chance_of_rain,
-          precip_mm: day.day.totalprecip_mm,
-          avgtemp_c: day.day.avgtemp_c,
-          avghumidity: day.day.avghumidity
-        }));
-      } else {
-        throw new Error("Weather API failed");
+    const geoRes = await fetchWithTimeout(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(data.location)}&count=1`);
+    const geoData = await geoRes.json();
+    if (geoData.results && geoData.results.length > 0) {
+      const { latitude, longitude } = geoData.results[0];
+      const weatherRes = await fetchWithTimeout(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=auto`);
+      const weatherData = await weatherRes.json();
+      
+      if (weatherData.daily) {
+        weatherForecast = weatherData.daily.time.map((time: string, i: number) => ({
+          date: time.split('-').reverse().join('/'),
+          chance_of_rain: weatherData.daily.precipitation_probability_max[i],
+          precip_mm: weatherData.daily.precipitation_sum[i],
+          avgtemp_c: (weatherData.daily.temperature_2m_max[i] + weatherData.daily.temperature_2m_min[i]) / 2,
+          avghumidity: data.humidity // Fallback to current humidity as forecast doesn't always have it
+        })).slice(0, 5);
       }
-    } else {
-      throw new Error("No API key");
     }
   } catch (e) {
+    console.error("Weather fetch failed, using synthetic forecast", e);
+  }
+
+  // Fallback if weather fetch failed
+  if (weatherForecast.length === 0) {
     for (let i = 0; i < 5; i++) {
       const d = new Date();
       d.setDate(d.getDate() + i + 1);
@@ -405,6 +428,135 @@ async function generateIrrigationPlan(data: any): Promise<IrrigationPlanResult> 
     }
   }
 
+  const cropConfig = CROP_DATA[data.cropType] || CROP_DATA['Wheat'];
+  
+  // 2. Use Gemini to generate an intelligent irrigation plan
+  try {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error("GEMINI_API_KEY is missing");
+    }
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const prompt = `
+      You are an AI Irrigation Specialist. Generate a 5-day irrigation plan for a farm.
+      
+      Farm Data:
+      - Crop: ${data.cropType} (Root Depth: ${cropConfig.rootDepth}m, Critical Moisture: ${cropConfig.criticalMoisture}%)
+      - Soil: ${data.soilType} (Moisture: ${data.soilMoisture}%, pH: ${data.soilPH})
+      - Nutrients: N=${data.nitrogen}, P=${data.phosphorus}, K=${data.potassium}
+      - Field Area: ${data.fieldArea}m²
+      
+      Weather Forecast (5 Days):
+      ${JSON.stringify(weatherForecast)}
+      
+      Calculate:
+      1. Soil Condition Summary (Good/Moderate/Poor)
+      2. Rain Forecast Summary
+      3. Immediate Irrigation needed? (Boolean)
+      4. Recommended Irrigation Method (Drip/Sprinkler/Flood)
+      5. Suitability Scores for each method (0-100)
+      6. Daily plan: predicted moisture, irrigate (true/false), water amount (liters)
+      
+      Return strictly JSON:
+      {
+        "soil_condition_summary": "...",
+        "rain_forecast_summary": "...",
+        "immediate_irrigation": true/false,
+        "recommended_irrigation_method": "...",
+        "suitability_scores": {"Drip": 85, "Sprinkler": 60, "Flood": 40},
+        "irrigation_plan": [
+          {
+            "date": "DD/MM/YYYY",
+            "predicted_moisture": 45.5,
+            "irrigate": true,
+            "water_amount": 1200
+          },
+          ... (5 days)
+        ],
+        "water_recommendation_liters": 5000,
+        "water_saved_estimate": 200,
+        "next_irrigation_date": "DD/MM/YYYY"
+      }
+    `;
+
+    const generateContentWithTimeout = async (params: any, timeout = 15000) => {
+      return Promise.race([
+        ai.models.generateContent(params),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Gemini API timeout")), timeout))
+      ]) as Promise<any>;
+    };
+
+    const response = await generateContentWithTimeout({
+      model: "gemini-3-flash-preview",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            soil_condition_summary: { type: Type.STRING },
+            rain_forecast_summary: { type: Type.STRING },
+            immediate_irrigation: { type: Type.BOOLEAN },
+            recommended_irrigation_method: { type: Type.STRING },
+            suitability_scores: {
+              type: Type.OBJECT,
+              properties: {
+                Drip: { type: Type.NUMBER },
+                Sprinkler: { type: Type.NUMBER },
+                Flood: { type: Type.NUMBER }
+              }
+            },
+            irrigation_plan: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  date: { type: Type.STRING },
+                  predicted_moisture: { type: Type.NUMBER },
+                  irrigate: { type: Type.BOOLEAN },
+                  water_amount: { type: Type.NUMBER }
+                }
+              }
+            },
+            water_recommendation_liters: { type: Type.NUMBER },
+            water_saved_estimate: { type: Type.NUMBER },
+            next_irrigation_date: { type: Type.STRING }
+          }
+        }
+      }
+    });
+
+    const result = JSON.parse(response.text || '{}');
+    
+    // Add missing fields required by the interface
+    const root_depth = cropConfig.rootDepth;
+    const base_soil_factor = SOIL_RETENTION_FACTOR[data.soilType as keyof typeof SOIL_RETENTION_FACTOR] || 1.0;
+    const nutrition_factor = calculateSoilFactor(data.nitrogen, data.phosphorus, data.potassium, data.soilPH);
+    const final_soil_factor = base_soil_factor * nutrition_factor;
+    const efficiencies = { Flood: 0.6, Sprinkler: 0.75, Drip: 0.9 };
+    const recommended_efficiency = efficiencies[result.recommended_irrigation_method as keyof typeof efficiencies] || 0.9;
+
+    return {
+      ...result,
+      lstm_predictions: result.irrigation_plan.map((p: any) => p.predicted_moisture),
+      adjusted_predictions: result.irrigation_plan.map((p: any) => p.predicted_moisture),
+      soil_factor: final_soil_factor,
+      past_7_days: generatePast7DaysHistory(data.soilMoisture),
+      recommended_efficiency,
+      root_depth,
+      // Ensure weather is attached to plan for the table
+      irrigation_plan: result.irrigation_plan.map((p: any, i: number) => ({
+        ...p,
+        weather: weatherForecast[i]
+      }))
+    };
+  } catch (error) {
+    console.error("Gemini Irrigation Plan failed, falling back to basic logic", error);
+    // Fallback to existing logic if Gemini fails
+    return fallbackIrrigationPlan(data, weatherForecast);
+  }
+}
+
+async function fallbackIrrigationPlan(data: any, weatherForecast: any[]): Promise<IrrigationPlanResult> {
   const cropConfig = CROP_DATA[data.cropType] || CROP_DATA['Wheat'];
   const root_depth = cropConfig.rootDepth;
   let base_soil_factor = SOIL_RETENTION_FACTOR[data.soilType as keyof typeof SOIL_RETENTION_FACTOR] || 1.0;
@@ -428,7 +580,6 @@ async function generateIrrigationPlan(data: any): Promise<IrrigationPlanResult> 
   const recommended_efficiency = efficiencies[best_method as keyof typeof efficiencies];
 
   const lstm_predictions = mockLSTMPredict(data.soilMoisture, 5);
-  
   const threshold = { moisture: cropConfig.criticalMoisture, temperature: cropConfig.tempMax };
   const emergency_threshold = threshold.moisture - 10;
   
@@ -444,23 +595,18 @@ async function generateIrrigationPlan(data: any): Promise<IrrigationPlanResult> 
   const adjusted_predictions = [];
   let total_water_recommended = 0;
   let total_water_saved = 0;
-  
   let rain_expected = false;
   
   for (let i = 0; i < 5; i++) {
     const weather = weatherForecast[i];
-    if (weather.chance_of_rain > 50 || weather.precip_mm > 5) {
-      rain_expected = true;
-    }
+    if (weather.chance_of_rain > 50 || weather.precip_mm > 5) rain_expected = true;
     
     const rain_effect = weather.precip_mm * 2;
     const evaporation = calculateEvaporation(weather.avgtemp_c, weather.avghumidity);
-    
     const base_decay = lstm_predictions[i] - (i === 0 ? data.soilMoisture : lstm_predictions[i-1]);
     
     current_moisture = current_moisture + base_decay + rain_effect - (evaporation * final_soil_factor);
     current_moisture = Math.max(0, Math.min(100, current_moisture));
-    
     adjusted_predictions.push(current_moisture);
     
     let irrigate = false;
@@ -469,12 +615,9 @@ async function generateIrrigationPlan(data: any): Promise<IrrigationPlanResult> 
     if (current_moisture < threshold.moisture) {
       irrigate = true;
       const deficit = threshold.moisture - current_moisture + 10;
-      
       const deficit_fraction = deficit / 100;
       const raw_water = (data.fieldArea * root_depth * deficit_fraction * 1000 * final_soil_factor) / recommended_efficiency;
-      const safety_margin = 1.05;
-      water_amount = Math.max(0, Math.round(raw_water * safety_margin));
-      
+      water_amount = Math.max(0, Math.round(raw_water * 1.05));
       current_moisture += deficit;
       total_water_recommended += water_amount;
     } else {
@@ -490,14 +633,10 @@ async function generateIrrigationPlan(data: any): Promise<IrrigationPlanResult> 
     });
   }
   
-  let soil_condition_summary = "Moderate";
-  if (final_soil_factor < 1.0) soil_condition_summary = "Good";
-  if (final_soil_factor > 1.2) soil_condition_summary = "Poor";
-  
   const next_irrigation = plan.find(p => p.irrigate);
   
   return {
-    soil_condition_summary,
+    soil_condition_summary: final_soil_factor < 1.0 ? "Good" : final_soil_factor > 1.2 ? "Poor" : "Moderate",
     rain_forecast_summary: rain_expected ? "Rain expected in the next 5 days." : "No significant rain expected.",
     lstm_predictions,
     adjusted_predictions,
@@ -587,7 +726,7 @@ export default function App() {
         }} />}
         {activeTab === 'history' && <HistoryView records={system.records} />}
         {activeTab === 'analytics' && <AnalyticsView records={system.records} />}
-        {activeTab === 'ml' && <CropRecommendationView />}
+        {activeTab === 'ml' && <MLRecommendView />}
         {activeTab === 'predictor' && <PredictorView records={system.records} />}
         {activeTab === 'result' && latestRecord && (
           <ResultView 
@@ -775,6 +914,51 @@ function DataEntryView({ onSubmit }: { onSubmit: (data: Omit<FarmData, 'id' | 't
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
+  const [weatherMode, setWeatherMode] = useState<'manual' | 'auto'>('manual');
+  const [isFetchingWeather, setIsFetchingWeather] = useState(false);
+  const [weatherFetchStatus, setWeatherFetchStatus] = useState<string | null>(null);
+  const [weatherError, setWeatherError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setWeatherFetchStatus(null);
+  }, [weatherMode, formData.location]);
+
+  const fetchWeather = async () => {
+    if (!formData.location) return;
+    setIsFetchingWeather(true);
+    setWeatherFetchStatus(null);
+    setWeatherError(null);
+    try {
+      const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(formData.location)}&count=1`);
+      const geoData = await geoRes.json();
+      if (!geoData.results || geoData.results.length === 0) {
+        throw new Error(`Location "${formData.location}" not found. Please check the name or use manual mode.`);
+      }
+      const { latitude, longitude, name: resolvedCity } = geoData.results[0];
+
+      const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,precipitation&daily=precipitation_sum&timezone=auto`);
+      const weatherData = await weatherRes.json();
+
+      const temp = weatherData.current.temperature_2m;
+      const hum = weatherData.current.relative_humidity_2m;
+      const rain = weatherData.daily.precipitation_sum[0];
+
+      setFormData(prev => ({
+        ...prev,
+        temperature: temp,
+        humidity: hum,
+        rainfall: rain
+      }));
+
+      setWeatherFetchStatus(`Weather data successfully fetched for ${resolvedCity}`);
+    } catch (err: any) {
+      setWeatherError(err.message);
+      setWeatherMode('manual');
+    } finally {
+      setIsFetchingWeather(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsAnalyzing(true);
@@ -898,6 +1082,54 @@ function DataEntryView({ onSubmit }: { onSubmit: (data: Omit<FarmData, 'id' | 't
               <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider border-b border-slate-100 pb-2 flex items-center gap-2">
                 <Thermometer className="w-4 h-4" /> Environment
               </h3>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-3">Weather Input Mode</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="radio" 
+                      name="farmWeatherMode" 
+                      checked={weatherMode === 'manual'} 
+                      onChange={() => setWeatherMode('manual')}
+                      className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                    />
+                    <span className="text-sm font-medium text-slate-700 group-hover:text-emerald-600 transition-colors">Manual</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="radio" 
+                      name="farmWeatherMode" 
+                      checked={weatherMode === 'auto'} 
+                      onChange={() => setWeatherMode('auto')}
+                      className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                    />
+                    <span className="text-sm font-medium text-slate-700 group-hover:text-emerald-600 transition-colors">Auto by Location</span>
+                  </label>
+                </div>
+              </div>
+
+              {weatherMode === 'auto' && (
+                <div className="space-y-2 animate-in slide-in-from-top-2 duration-200">
+                  <div className="flex gap-2">
+                    <button 
+                      type="button"
+                      onClick={fetchWeather}
+                      disabled={isFetchingWeather || !formData.location}
+                      className="w-full bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-4 py-2 rounded-lg text-sm font-bold transition-colors disabled:opacity-50"
+                    >
+                      {isFetchingWeather ? 'Fetching Weather...' : `Fetch Weather for ${formData.location || 'Location'}`}
+                    </button>
+                  </div>
+                  {weatherFetchStatus && (
+                    <p className="text-xs text-emerald-600 font-medium">{weatherFetchStatus}</p>
+                  )}
+                  {weatherError && (
+                    <p className="text-xs text-red-500 font-medium">{weatherError}</p>
+                  )}
+                </div>
+              )}
+
               <InputGroup label="Soil Moisture (%)" name="soilMoisture" value={formData.soilMoisture} onChange={handleChange} icon={Droplets} />
               <InputGroup label="Temperature (°C)" name="temperature" value={formData.temperature} onChange={handleChange} icon={Thermometer} />
               <InputGroup label="Humidity (%)" name="humidity" value={formData.humidity} onChange={handleChange} icon={Wind} />
@@ -1604,4 +1836,538 @@ function PredictorView({ records }: { records: FarmData[] }) {
   );
 }
 
+function MLRecommendView() {
+  const [formData, setFormData] = useState({
+    N: 90,
+    P: 42,
+    K: 43,
+    temperature: 20.8,
+    humidity: 82.0,
+    ph: 6.5,
+    rainfall: 202.9
+  });
+  const [topCrops, setTopCrops] = useState<any[] | null>(null);
+  const [bestCrop, setBestCrop] = useState<any | null>(null);
+  const [featureImportance, setFeatureImportance] = useState<Record<string, number> | null>(null);
+  const [topFactors, setTopFactors] = useState<{feature: string, impact: string}[] | null>(null);
+  const [reasoning, setReasoning] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState(0);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
+  const [weatherMode, setWeatherMode] = useState<'manual' | 'auto'>('manual');
+  const [city, setCity] = useState('');
+  const [isFetchingWeather, setIsFetchingWeather] = useState(false);
+  const [weatherFetchStatus, setWeatherFetchStatus] = useState<string | null>(null);
+  const [weatherMetadata, setWeatherMetadata] = useState<any>(null);
+
+  useEffect(() => {
+    setWeatherFetchStatus(null);
+    setWeatherMetadata(null);
+  }, [weatherMode, city]);
+
+  const fetchWeather = async () => {
+    if (!city) return;
+    setIsFetchingWeather(true);
+    setWeatherFetchStatus(null);
+    setError(null);
+    try {
+      // Step 1: Geocoding
+      const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1`);
+      const geoData = await geoRes.json();
+      if (!geoData.results || geoData.results.length === 0) {
+        throw new Error(`City "${city}" not found. Please check the name or use manual mode.`);
+      }
+      const { latitude, longitude, name: resolvedCity } = geoData.results[0];
+
+      // Step 2: Forecast
+      const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,precipitation&daily=precipitation_sum&timezone=auto`);
+      const weatherData = await weatherRes.json();
+
+      // Step 3: Update form
+      const temp = weatherData.current.temperature_2m;
+      const hum = weatherData.current.relative_humidity_2m;
+      const rain = weatherData.daily.precipitation_sum[0];
+
+      setFormData(prev => ({
+        ...prev,
+        temperature: temp,
+        humidity: hum,
+        rainfall: rain
+      }));
+
+      setWeatherMetadata({
+        weather_input_mode: 'auto',
+        city_name: resolvedCity,
+        weather_source: 'open-meteo',
+        latitude,
+        longitude,
+        temp,
+        hum,
+        rain
+      });
+
+      setWeatherFetchStatus(`Weather data successfully fetched for ${resolvedCity}`);
+    } catch (err: any) {
+      setError(err.message);
+      setWeatherMode('manual');
+    } finally {
+      setIsFetchingWeather(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setTopCrops(null);
+    setBestCrop(null);
+    setFeatureImportance(null);
+    setTopFactors(null);
+    setReasoning(null);
+    setActiveTab(0);
+
+    try {
+      const response = await fetch('/predict', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...formData,
+          weather_metadata: weatherMode === 'auto' ? weatherMetadata : { weather_input_mode: 'manual' }
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to get prediction from server. Make sure the backend is running.');
+      }
+
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
+      setTopCrops(data.top_crops);
+      setBestCrop(data.best_crop);
+      setFeatureImportance(data.feature_importance);
+      setTopFactors(data.top_influencing_factors);
+      setReasoning(data.reasoning);
+    } catch (err: any) {
+      setError(err.message || 'An unexpected error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: Number(value)
+    }));
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-6 animate-in fade-in duration-500 pb-12">
+      <header>
+        <h1 className="text-3xl font-bold tracking-tight text-slate-900 flex items-center gap-3">
+          <BrainCircuit className="w-8 h-8 text-emerald-500" />
+          Crop Recommendation
+        </h1>
+        <p className="text-slate-500 mt-1">Use our Random Forest model to predict the best crop for your soil and weather conditions.</p>
+      </header>
+
+      <div className="flex flex-col gap-6">
+        <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <h2 className="text-lg font-semibold text-slate-800">Input Parameters</h2>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="space-y-4 lg:col-span-2">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-3">Weather Input Mode</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="radio" 
+                      name="weatherMode" 
+                      checked={weatherMode === 'manual'} 
+                      onChange={() => setWeatherMode('manual')}
+                      className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                    />
+                    <span className="text-sm font-medium text-slate-700 group-hover:text-emerald-600 transition-colors">Manual</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input 
+                      type="radio" 
+                      name="weatherMode" 
+                      checked={weatherMode === 'auto'} 
+                      onChange={() => setWeatherMode('auto')}
+                      className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                    />
+                    <span className="text-sm font-medium text-slate-700 group-hover:text-emerald-600 transition-colors">Auto by City</span>
+                  </label>
+                </div>
+              </div>
+
+              {weatherMode === 'auto' && (
+                <div className="space-y-2 animate-in slide-in-from-top-2 duration-200">
+                  <label className="block text-xs font-bold text-slate-500 uppercase">City Name</label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={city} 
+                      onChange={(e) => setCity(e.target.value)} 
+                      placeholder="e.g. Chennai"
+                      className="flex-1 rounded-lg border-slate-300 bg-white border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" 
+                    />
+                    <button 
+                      type="button"
+                      onClick={fetchWeather}
+                      disabled={isFetchingWeather || !city}
+                      className="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-4 py-2 rounded-lg text-sm font-bold transition-colors disabled:opacity-50"
+                    >
+                      {isFetchingWeather ? '...' : 'Fetch'}
+                    </button>
+                  </div>
+                  {weatherFetchStatus && (
+                    <p className="text-[10px] font-medium text-emerald-600 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" />
+                      {weatherFetchStatus}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Nitrogen (N)</label>
+              <input type="number" name="N" value={formData.N} onChange={handleChange} className="w-full rounded-lg border-slate-300 bg-slate-50 border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" required />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Phosphorus (P)</label>
+              <input type="number" name="P" value={formData.P} onChange={handleChange} className="w-full rounded-lg border-slate-300 bg-slate-50 border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" required />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Potassium (K)</label>
+              <input type="number" name="K" value={formData.K} onChange={handleChange} className="w-full rounded-lg border-slate-300 bg-slate-50 border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" required />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Temperature (°C)</label>
+              <input type="number" step="0.1" name="temperature" value={formData.temperature} onChange={handleChange} className="w-full rounded-lg border-slate-300 bg-slate-50 border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" required />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Humidity (%)</label>
+              <input type="number" step="0.1" name="humidity" value={formData.humidity} onChange={handleChange} className="w-full rounded-lg border-slate-300 bg-slate-50 border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" required />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">pH Level</label>
+              <input type="number" step="0.1" name="ph" value={formData.ph} onChange={handleChange} className="w-full rounded-lg border-slate-300 bg-slate-50 border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" required />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Rainfall (mm)</label>
+              <input type="number" step="0.1" name="rainfall" value={formData.rainfall} onChange={handleChange} className="w-full rounded-lg border-slate-300 bg-slate-50 border py-2 px-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" required />
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <input 
+                type="checkbox" 
+                checked={showAdvanced} 
+                onChange={(e) => setShowAdvanced(e.target.checked)}
+                className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-slate-300 rounded"
+              />
+              <span className="text-sm font-medium text-slate-600 group-hover:text-emerald-600 transition-colors">Advanced Mode (Show Formulas)</span>
+            </label>
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-8 rounded-xl shadow-md transition-all disabled:opacity-70 flex items-center gap-2"
+            >
+              {loading ? (
+                <span className="animate-pulse">Analyzing...</span>
+              ) : (
+                <>
+                  <BrainCircuit className="w-5 h-5" />
+                  Predict Best Crops
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+
+        <div className="space-y-6">
+          {error ? (
+            <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg border border-slate-800 flex flex-col justify-center min-h-[300px]">
+              <div className="text-center animate-in fade-in">
+                <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+                <h3 className="text-xl font-bold text-red-400 mb-2">Prediction Failed</h3>
+                <p className="text-slate-400 text-sm">{error}</p>
+              </div>
+            </div>
+          ) : topCrops && bestCrop ? (
+            <div className="space-y-8 animate-in zoom-in duration-300">
+              
+              {/* Section 1: Crop Tabs */}
+              <div className="bg-slate-900 text-white rounded-2xl shadow-lg border border-slate-800 overflow-hidden">
+                <div className="flex border-b border-slate-800">
+                  {topCrops.map((crop, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setActiveTab(idx)}
+                      className={`flex-1 py-4 px-6 text-center font-bold text-sm uppercase tracking-wider transition-colors ${
+                        activeTab === idx 
+                          ? 'bg-emerald-500/10 text-emerald-400 border-b-2 border-emerald-500' 
+                          : 'text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+                      }`}
+                    >
+                      #{idx + 1} {crop.crop}
+                    </button>
+                  ))}
+                </div>
+                
+                <div className="p-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* Left Column: Crop Info & Economics */}
+                    <div className="space-y-6">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-400">
+                            <Sprout className="w-8 h-8" />
+                          </div>
+                          <div>
+                            <h3 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400">
+                              {topCrops[activeTab].crop}
+                            </h3>
+                            <div className="mt-1 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                              <span className="text-xs font-medium text-emerald-300">
+                                {topCrops[activeTab].confidence_score}% Confidence
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                          <p className="text-xs font-bold text-slate-500 uppercase mb-1">Seed Price/kg</p>
+                          <p className="text-lg font-bold text-slate-200">₹{topCrops[activeTab].seedCost}</p>
+                        </div>
+                        <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                          <p className="text-xs font-bold text-slate-500 uppercase mb-1">Market Price</p>
+                          <p className="text-lg font-bold text-slate-200">₹{topCrops[activeTab].marketPrice}/kg</p>
+                        </div>
+                        <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                          <p className="text-xs font-bold text-slate-500 uppercase mb-1">Est. Yield/ha</p>
+                          <p className="text-lg font-bold text-slate-200">{topCrops[activeTab].yield} kg</p>
+                        </div>
+                        <div className="bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20">
+                          <p className="text-xs font-bold text-emerald-500 uppercase mb-1">Profit Margin</p>
+                          <p className="text-lg font-bold text-emerald-400">+{topCrops[activeTab].profitPercentage}%</p>
+                        </div>
+                      </div>
+
+                      {showAdvanced && (
+                        <div className="bg-slate-800/30 p-4 rounded-xl border border-slate-700/30 text-xs text-slate-400 space-y-1">
+                          <p><strong className="text-slate-300">Revenue:</strong> {topCrops[activeTab].yield} kg × ₹{topCrops[activeTab].marketPrice} = ₹{topCrops[activeTab].expectedRevenue}</p>
+                          <p><strong className="text-slate-300">Profit %:</strong> ((₹{topCrops[activeTab].expectedRevenue} - ₹{topCrops[activeTab].seedCost}) / ₹{topCrops[activeTab].seedCost}) × 100</p>
+                          <p><strong className="text-slate-300">Composite Score:</strong> ({topCrops[activeTab].confidence_score} × 0.6) + ({topCrops[activeTab].profitPercentage} × 0.4) = {topCrops[activeTab].compositeScore}</p>
+                        </div>
+                      )}
+
+                      <div>
+                        <h4 className="text-sm font-semibold text-emerald-400 mb-3 flex items-center gap-2">
+                          <Leaf className="w-4 h-4" /> Crop Profile
+                        </h4>
+                        <div className="overflow-hidden rounded-lg border border-slate-700 bg-slate-800/50">
+                          <table className="w-full text-xs text-left">
+                            <tbody className="divide-y divide-slate-700/50">
+                              <tr className="hover:bg-slate-700/30 transition-colors">
+                                <th className="px-3 py-2 font-medium text-slate-300 w-1/4 align-top">Effort</th>
+                                <td className="px-3 py-2 text-slate-400">{topCrops[activeTab].details.effort}</td>
+                              </tr>
+                              <tr className="hover:bg-slate-700/30 transition-colors">
+                                <th className="px-3 py-2 font-medium text-slate-300 w-1/4 align-top">Water</th>
+                                <td className="px-3 py-2 text-slate-400">{topCrops[activeTab].details.water}</td>
+                              </tr>
+                              <tr className="hover:bg-slate-700/30 transition-colors">
+                                <th className="px-3 py-2 font-medium text-slate-300 w-1/4 align-top">Risk</th>
+                                <td className="px-3 py-2 text-slate-400">{topCrops[activeTab].details.risk}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Column: Feature Importance */}
+                    <div className="flex flex-col">
+                      <h4 className="text-sm font-semibold text-emerald-400 mb-4 flex items-center gap-2">
+                        <ChartIcon className="w-4 h-4" /> Feature Importance
+                      </h4>
+                      {featureImportance && topFactors && (
+                        <>
+                          <div className="h-48 w-full mb-4 relative">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie
+                                  data={Object.entries(featureImportance).map(([key, value]) => ({
+                                    name: key,
+                                    importance: value,
+                                    isTop: topFactors.some(f => f.feature === key)
+                                  }))}
+                                  cx="50%"
+                                  cy="50%"
+                                  innerRadius={40}
+                                  outerRadius={60}
+                                  paddingAngle={5}
+                                  dataKey="importance"
+                                  label={({ value }) => `${(value * 100).toFixed(0)}%`}
+                                >
+                                  {
+                                    Object.entries(featureImportance).map(([key, _], index) => {
+                                      const isTop = topFactors.some(f => f.feature === key);
+                                      const colors = ['#34d399', '#10b981', '#059669', '#047857', '#065f46', '#064e3b', '#022c22'];
+                                      const nonTopColors = ['#94a3b8', '#64748b', '#475569', '#334155', '#1e293b', '#0f172a'];
+                                      return (
+                                        <Cell 
+                                          key={`cell-${index}`} 
+                                          fill={isTop ? colors[index % colors.length] : nonTopColors[index % nonTopColors.length]} 
+                                        />
+                                      );
+                                    })
+                                  }
+                                </Pie>
+                                <Tooltip 
+                                  formatter={(value: number) => [`${(value * 100).toFixed(1)}%`, 'Importance']}
+                                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
+                                  itemStyle={{ color: '#34d399' }}
+                                />
+                                <Legend 
+                                  layout="vertical" 
+                                  verticalAlign="middle" 
+                                  align="right"
+                                  formatter={(value, entry: any) => (
+                                    <span className="text-slate-300 text-[10px]">
+                                      {value}
+                                    </span>
+                                  )}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                          </div>
+                          <div className="space-y-2 mt-auto">
+                            <h5 className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">Top Influencing Factors</h5>
+                            <div className="grid grid-cols-1 gap-1.5">
+                              {topFactors.map((factor, idx) => (
+                                <div key={idx} className="flex items-center justify-between bg-slate-800/50 p-2 rounded-lg border border-slate-700/50">
+                                  <span className="text-xs font-medium text-slate-200 capitalize">{factor.feature}</span>
+                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                    factor.impact === 'positive' 
+                                      ? 'bg-emerald-500/20 text-emerald-400' 
+                                      : 'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {factor.impact === 'positive' ? '+ Positive' : '- Negative'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Comparison Table */}
+              <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg border border-slate-800 overflow-hidden">
+                <h4 className="text-lg font-semibold text-emerald-400 mb-4 flex items-center gap-2">
+                  <LayoutDashboard className="w-5 h-5" />
+                  Crop Comparison
+                </h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-slate-800/80 text-slate-300 uppercase text-xs font-bold tracking-wider">
+                      <tr>
+                        <th className="px-4 py-3 rounded-tl-lg">Feature</th>
+                        {topCrops.map((c, i) => (
+                          <th key={i} className={`px-4 py-3 ${i === 2 ? 'rounded-tr-lg' : ''}`}>
+                            {c.crop} {i === 0 && <span className="ml-2 text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">Best</span>}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700/50">
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Confidence</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-slate-200">{c.confidence_score}%</td>)}
+                      </tr>
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Effort</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-slate-200">{c.details.effort}</td>)}
+                      </tr>
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Seed Price/kg</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-slate-200">₹{c.seedCost}</td>)}
+                      </tr>
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Market Price</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-slate-200">₹{c.marketPrice}/kg</td>)}
+                      </tr>
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Yield/ha</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-slate-200">{c.yield} kg</td>)}
+                      </tr>
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Profit %</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-emerald-400 font-bold">+{c.profitPercentage}%</td>)}
+                      </tr>
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Risk</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-slate-200" title={c.details.risk}>{c.details.risk}</td>)}
+                      </tr>
+                      <tr className="hover:bg-slate-800/30 transition-colors">
+                        <th className="px-4 py-3 font-medium text-slate-400">Water Req.</th>
+                        {topCrops.map((c, i) => <td key={i} className="px-4 py-3 text-slate-200" title={c.details.water}>{c.details.water}</td>)}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Section 3: Final Conclusion Card */}
+              {reasoning && (
+                <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-8 rounded-2xl shadow-xl border border-emerald-500/30 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>
+                  
+                  <h4 className="text-xl font-bold text-emerald-400 mb-6 flex items-center gap-3 relative z-10">
+                    <BrainCircuit className="w-6 h-6" />
+                    Final Conclusion & AI Reasoning
+                  </h4>
+                  
+                  <div className="prose prose-invert prose-emerald prose-sm max-w-none text-slate-300 relative z-10">
+                    <Markdown>{reasoning}</Markdown>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          ) : (
+            <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg border border-slate-800 flex flex-col justify-center min-h-[300px]">
+              <div className="text-center text-slate-500">
+                <BrainCircuit className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p>Enter parameters and click predict to see the ML model's recommendation.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
