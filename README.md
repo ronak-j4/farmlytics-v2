@@ -1,7 +1,7 @@
-Farmlytics
-Smart agriculture platform that helps farmers make data-driven decisions using machine learning.
+Farmlytics : 
+Smart agriculture software that helps farmers make decisions with accountability using machine learning.
 Feature:
-Crop recommendation based on soil & climate data
+Crop recommendation using random forest model, 
 Irrigation prediction using LSTM model
 
 
